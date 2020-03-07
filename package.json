@@ -1,0 +1,14 @@
+{
+  "name": "aws-infra-automate-scripts",
+  "version": "1.0.0",
+  "description": "Serverless API for status/start/stop of Ec2 instances based on tag values",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Naveen Endrapu",
+  "license": "",
+  "dependencies": {
+    "async": "^2.6.1"
+  }
+}

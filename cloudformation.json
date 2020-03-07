@@ -1,0 +1,437 @@
+{
+   "AWSTemplateFormatVersion":"2010-09-09",
+   "Description":"AWS CloudFormation Template for Ec2Automate Lambda Function and API ",
+   "Parameters":{
+      "Ec2AutomateFunction":{
+         "Description":"Lambda Function Name",
+         "Type":"String",
+         "ConstraintDescription":"Must be a valid Lambda Function"
+      },
+      "Ec2AutomateCodeBucket":{
+         "Description":"S3 bucket having the lambda code",
+         "Type":"String",
+         "ConstraintDescription":"Must be a valid S3 Bucket"
+      },
+      "Ec2AutomateCodeZip":{
+         "Description":".zip file name of lamba code available in S3",
+         "Type":"String",
+         "ConstraintDescription":"Must be a valid S3 key"
+      },
+      "Ec2AutomateAPIName":{
+         "Description":"API Gateway - REST API Name",
+         "Type":"String",
+         "ConstraintDescription":"Must be a valid RestApi Name"
+      },
+      "Ec2AutomateAPIDeploymentStage":{
+         "Description":"Deployment Stage of REST API",
+         "Type":"String"
+      },
+      "matterMostChannelId": {
+        "Description": "Provide Authorised mattermost channel id, which is allowed to execute commands",
+        "Type": "String",
+        "NoEcho" : "true"
+      },
+      "matterMostIntegrationToken": {
+        "Description": "Provide Authorised mattermost Integration Token, which is allowed to execute commands",
+        "Type": "String",
+        "NoEcho" : "true"
+      },
+      "notAllowedEnvironments": {
+        "Description": "Provide comma seperate list of tagValues which should be restricted",
+        "Type": "String"
+      }
+   },
+   "Resources":{
+      "Ec2AutomateExecutionRole":{
+         "Type":"AWS::IAM::Role",
+         "Properties":{
+            "AssumeRolePolicyDocument":{
+               "Version":"2012-10-17",
+               "Statement":[
+                  {
+                     "Effect":"Allow",
+                     "Principal":{
+                        "Service":[
+                           "lambda.amazonaws.com"
+                        ]
+                     },
+                     "Action":[
+                        "sts:AssumeRole"
+                     ]
+                  }
+               ]
+            },
+            "Path":"/"
+         }
+      },
+      "Ec2AutomateExecutionPolicy":{
+         "DependsOn":[
+            "Ec2AutomateExecutionRole"
+         ],
+         "Type":"AWS::IAM::Policy",
+         "Properties":{
+            "PolicyName":{
+               "Fn::Join":[
+                  "-",
+                  [
+                     {
+                        "Ref":"Ec2AutomateFunction"
+                     },
+                     "lambda-policy"
+                  ]
+               ]
+            },
+            "Roles":[
+               {
+                  "Ref":"Ec2AutomateExecutionRole"
+               }
+            ],
+            "PolicyDocument":{
+               "Version":"2012-10-17",
+               "Statement":[
+                  {
+                     "Effect":"Allow",
+                     "Action":[
+                        "logs:CreateLogGroup",
+                        "logs:CreateLogStream",
+                        "logs:PutLogEvents"
+                     ],
+                     "Resource":"arn:aws:logs:*:*:*"
+                  },
+                  {
+                     "Effect":"Allow",
+                     "Action":[
+                       "ec2:DescribeInstances"
+                       ,"ec2:TerminateInstances"
+                       ,"ec2:StopInstances"
+                       ,"ec2:StartInstances"
+                     ],
+                     "Resource":"*"
+                  },
+                  {
+                     "Effect":"Allow",
+                     "Action":[
+                       "autoscaling:ResumeProcesses"
+                       ,"autoscaling:SuspendProcesses"
+                       ,"autoscaling:DescribeAutoScalingGroups"
+                       ,"autoscaling:DetachInstances"
+                     ],
+                     "Resource":"*"
+                  }
+               ]
+            }
+         }
+      },
+      "Ec2AutomateLambda":{
+         "Type":"AWS::Lambda::Function",
+         "DependsOn":[
+            "Ec2AutomateExecutionRole",
+            "Ec2AutomateExecutionPolicy"
+         ],
+         "Properties":{
+            "Code":{
+               "S3Bucket":{
+                  "Ref":"Ec2AutomateCodeBucket"
+               },
+               "S3Key":{
+                  "Ref":"Ec2AutomateCodeZip"
+               }
+            },
+            "Role":{
+               "Fn::GetAtt":[
+                  "Ec2AutomateExecutionRole",
+                  "Arn"
+               ]
+            },
+            "Description":{
+               "Ref":"Ec2AutomateFunction"
+            },
+            "FunctionName":{
+               "Ref":"Ec2AutomateFunction"
+            },
+            "Environment": {
+               "Variables": {
+                 "matterMostTokenToValidate": {"Ref": "matterMostIntegrationToken"},
+                 "matterMost_channel_id": {"Ref": "matterMostChannelId"},
+                 "notAllowedEnvironments": {"Ref": "notAllowedEnvironments"}
+               }
+            },
+            "Timeout":180,
+            "Handler":"index.handler",
+            "Runtime":"nodejs8.10",
+            "MemorySize":512
+         }
+      },
+      "APIGatewayLambdaInvokeRole":{
+         "Type":"AWS::IAM::Role",
+         "Properties":{
+            "AssumeRolePolicyDocument":{
+               "Version":"2012-10-17",
+               "Statement":[
+                  {
+                     "Sid":"",
+                     "Effect":"Allow",
+                     "Principal":{
+                        "Service":"apigateway.amazonaws.com"
+                     },
+                     "Action":"sts:AssumeRole"
+                  }
+               ]
+            }
+         }
+      },
+      "APIGatewayLambdaInvokePolicy":{
+         "DependsOn":[
+            "APIGatewayLambdaInvokeRole",
+            "Ec2AutomateLambda"
+         ],
+         "Type":"AWS::IAM::Policy",
+         "Properties":{
+            "PolicyName":{
+               "Fn::Join":[
+                  "-",
+                  [
+                     {
+                        "Ref":"Ec2AutomateAPIName"
+                     },
+                     "APIGatewayLambdaInvokePolicy"
+                  ]
+               ]
+            },
+            "Roles":[
+               {
+                  "Ref":"APIGatewayLambdaInvokeRole"
+               }
+            ],
+            "PolicyDocument":{
+               "Version":"2012-10-17",
+               "Statement":[
+                  {
+                     "Effect":"Allow",
+                     "Resource":{
+                        "Fn::Join":[
+                           "",
+                           [
+                              "arn:aws:lambda:",
+                              {
+                                 "Ref":"AWS::Region"
+                              },
+                              ":",
+                              {
+                                 "Ref":"AWS::AccountId"
+                              },
+                              ":function:",
+                              {
+                                 "Ref":"Ec2AutomateFunction"
+                              }
+                           ]
+                        ]
+                     },
+                     "Action":[
+                        "lambda:InvokeFunction"
+                     ]
+                  }
+               ]
+            }
+         }
+      },
+      "MyApi":{
+         "Type":"AWS::ApiGateway::RestApi",
+         "Properties":{
+            "Description":"Ec2AutomateAPIName",
+            "Name":{
+               "Ref":"Ec2AutomateAPIName"
+            }
+         }
+      },
+      "Ec2AutomateAPI":{
+         "DependsOn":[
+            "Ec2AutomateLambda"
+         ],
+         "Type":"AWS::ApiGateway::Resource",
+         "Properties":{
+            "RestApiId":{
+               "Ref":"MyApi"
+            },
+            "ParentId":{
+               "Fn::GetAtt":[
+                  "MyApi",
+                  "RootResourceId"
+               ]
+            },
+            "PathPart":"Ec2Automate"
+         }
+      },
+      "postCommandMethod":{
+         "Type":"AWS::ApiGateway::Method",
+         "Properties":{
+            "RestApiId":{
+               "Ref":"MyApi"
+            },
+            "ResourceId":{
+               "Ref":"Ec2AutomateAPI"
+            },
+            "HttpMethod":"POST",
+            "ApiKeyRequired":"false",
+            "AuthorizationType":"NONE",
+            "MethodResponses":[
+               {
+                  "StatusCode":"200"
+               }
+            ],
+            "Integration":{
+               "IntegrationHttpMethod":"POST",
+               "Type":"AWS",
+               "Uri":{
+                  "Fn::Join":[
+                     "",
+                     [
+                        "arn:aws:apigateway:",
+                        {
+                           "Ref":"AWS::Region"
+                        },
+                        ":lambda:path/2015-03-31/functions/",
+                        "arn:aws:lambda:",
+                        {
+                           "Ref":"AWS::Region"
+                        },
+                        ":",
+                        {
+                           "Ref":"AWS::AccountId"
+                        },
+                        ":function:",
+                        {
+                           "Ref":"Ec2AutomateFunction"
+                        },
+                        "/invocations"
+                     ]
+                  ]
+               },
+               "Credentials":{
+                  "Fn::GetAtt":[
+                     "APIGatewayLambdaInvokeRole",
+                     "Arn"
+                  ]
+               },
+               "IntegrationResponses":[
+                  {
+                     "StatusCode":"200"
+                  }
+               ],
+               "PassthroughBehavior": "WHEN_NO_MATCH",
+               "RequestTemplates": {
+                 "application/json": "",
+                 "application/x-www-form-urlencoded": { "Fn::Join": ["", [
+                  "## convert HTML POST data or HTTP GET query string to JSON\n",
+                  " \n",
+                  "## get the raw post data from the AWS built-in variable and give it a nicer name\n",
+                  "#if ($context.httpMethod == \"POST\")\n",
+                  " #set($rawAPIData = $input.path('$'))\n",
+                  "#elseif ($context.httpMethod == \"GET\")\n",
+                  " #set($rawAPIData = $input.params().querystring)\n",
+                  " #set($rawAPIData = $rawAPIData.toString())\n",
+                  " #set($rawAPIDataLength = $rawAPIData.length() - 1)\n",
+                  " #set($rawAPIData = $rawAPIData.substring(1, $rawAPIDataLength))\n",
+                  " #set($rawAPIData = $rawAPIData.replace(\", \", \"&\"))\n",
+                  "#else\n",
+                  " #set($rawAPIData = \"\")\n",
+                  "#end\n",
+                  " \n",
+                  "## first we get the number of \"&\" in the string, this tells us if there is more than one key value pair\n",
+                  "#set($countAmpersands = $rawAPIData.length() - $rawAPIData.replace(\"&\", \"\").length())\n",
+                  " \n",
+                  "## if there are no \"&\" at all then we have only one key value pair.\n",
+                  "## we append an ampersand to the string so that we can tokenise it the same way as multiple kv pairs.\n",
+                  "## the \"empty\" kv pair to the right of the ampersand will be ignored anyway.\n",
+                  "#if ($countAmpersands == 0)\n",
+                  " #set($rawPostData = $rawAPIData + \"&\")\n",
+                  "#end\n",
+                  " \n",
+                  "## now we tokenise using the ampersand(s)\n",
+                  "#set($tokenisedAmpersand = $rawAPIData.split(\"&\"))\n",
+                  " \n",
+                  "## we set up a variable to hold the valid key value pairs\n",
+                  "#set($tokenisedEquals = [])\n",
+                  " \n",
+                  "## now we set up a loop to find the valid key value pairs, which must contain only one \"=\"\n",
+                  "#foreach( $kvPair in $tokenisedAmpersand )\n",
+                  " #set($countEquals = $kvPair.length() - $kvPair.replace(\"=\", \"\").length())\n",
+                  " #if ($countEquals == 1)\n",
+                  "  #set($kvTokenised = $kvPair.split(\"=\"))\n",
+                  "  #if ($kvTokenised[0].length() > 0)\n",
+                  "   ## we found a valid key value pair. add it to the list.\n",
+                  "   #set($devNull = $tokenisedEquals.add($kvPair))\n",
+                  "  #end\n",
+                  " #end\n",
+                  "#end\n",
+                  " \n",
+                  "## next we set up our loop inside the output structure \"{\" and \"}\"\n",
+                  "{\n",
+                  "#foreach( $kvPair in $tokenisedEquals )\n",
+                  "  ## finally we output the JSON for this pair and append a comma if this isn't the last pair\n",
+                  "  #set($kvTokenised = $kvPair.split(\"=\"))\n",
+                  " \"$util.urlDecode($kvTokenised[0])\" : #if($kvTokenised[1].length() > 0)\"$util.urlDecode($kvTokenised[1])\"#{else}\"\"#end#if( $foreach.hasNext ),#end\n",
+                  "#end\n",
+                  "}"
+               ]]}
+              }
+            }
+         }
+      },
+      "Deployment":{
+         "DependsOn":"postCommandMethod",
+         "Type":"AWS::ApiGateway::Deployment",
+         "Properties":{
+            "RestApiId":{
+               "Ref":"MyApi"
+            },
+            "Description":"My deployment",
+            "StageName":{
+               "Ref":"Ec2AutomateAPIDeploymentStage"
+            }
+         }
+      },
+      "ApiKey":{
+         "Type":"AWS::ApiGateway::ApiKey",
+         "DependsOn":"Deployment",
+         "Properties":{
+            "Name": {
+               "Ref":"Ec2AutomateAPIName"
+            },
+            "Description":"CloudFormation API Key",
+            "Enabled":"true",
+            "StageKeys":[
+               {
+                  "RestApiId":{
+                     "Ref":"MyApi"
+                  },
+                  "StageName":{
+                     "Ref":"Ec2AutomateAPIDeploymentStage"
+                  }
+               }
+            ]
+         }
+      },
+      "DeploymentAfterApiKey":{
+         "DependsOn":"ApiKey",
+         "Type":"AWS::ApiGateway::Deployment",
+         "Properties":{
+            "RestApiId":{
+               "Ref":"MyApi"
+            },
+            "Description":"My deployment",
+            "StageName":{
+               "Ref":"Ec2AutomateAPIDeploymentStage"
+            }
+         }
+      }
+   },
+
+   "Outputs": {
+    "ApiUrl": {
+      "Description": "URL of the API",
+      "Value": {"Fn::Join": ["", ["https://", {"Ref": "MyApi"}, ".execute-api.", {"Ref": "AWS::Region"}, ".amazonaws.com/",
+      {"Ref": "Ec2AutomateAPIDeploymentStage"}, "/Ec2Automate"]]}
+    }
+  }
+}

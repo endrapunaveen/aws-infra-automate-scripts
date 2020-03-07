@@ -1,0 +1,132 @@
+import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
+
+pipeline {
+    parameters {
+        string( name: 'command', 
+                defaultValue: 'status', 
+                description: 'Command to be executed (status/start/stop)')
+	string( name: 'tagName', 
+                defaultValue: 'Name', 
+                description: 'Name of the tag associated to EC2 machines')
+	string( name: 'tagValue', 
+                defaultValue: '', 
+                description: 'value of the above provided tag Name')
+	string( name: 'region', 
+                defaultValue: 'eu-west-1', 
+                description: 'AWS region in which command should be executed')
+	string( name: 'channelId', 
+                defaultValue: '', 
+                description: 'Matter Most Channel Id')
+	string( name: 'channelToken', 
+                defaultValue: '', 
+                description: 'Matter Most Channel Token')
+		
+    }
+    triggers {
+        parameterizedCron('''
+            #stop hercules daily at 18:00 UK Time (22:30 IST) All days:
+            45 16 * * * % command=stop; tagName=infra_environment_class; tagValue=hercules; region=eu-west-1
+
+            #stop ppe1 daily at 18:00 UK Time (22:30 IST), All days:
+            46 16 * * * % command=stop; tagName=infra_environment_class; tagValue=ppe1; region=eu-west-1
+
+            #stop dev1 daily at 18:00 UK Time (22:30 IST), All days:
+            47 16 * * * % command=stop; tagName=infra_environment_class; tagValue=dev1; region=eu-west-1
+
+            #stop dev2 daily at 18:00 UK Time (22:30 IST), All days:
+            48 16 * * * % command=stop; tagName=infra_environment_class; tagValue=dev2; region=eu-west-1
+
+            #status hercules daily at 18:05 UK Time (22:35 IST), All days:
+            00 17 * * * % command=status; tagName=infra_environment_class; tagValue=hercules; region=eu-west-1
+
+            #status hercules daily at 05:05 UK Time (09:35 IST), All days:
+            05 04 * * * % command=status; tagName=infra_environment_class; tagValue=hercules; region=eu-west-1
+            
+            #status ppe1 daily at 18:05 UK Time (22:35 IST), All days:
+            01 17 * * * % command=status; tagName=infra_environment_class; tagValue=ppe1; region=eu-west-1
+            
+            #status dev1 daily at 18:05 UK Time (22:35 IST), All days:
+            02 17 * * * % command=status; tagName=infra_environment_class; tagValue=dev1; region=eu-west-1
+            
+            #status dev2 daily at 18:05 UK Time (22:35 IST), All days:
+            03 17 * * * % command=status; tagName=infra_environment_class; tagValue=dev2; region=eu-west-1
+
+            #start hercules daily at 05:00 UK Time (09:30 IST), Monday – Fridays:
+            00 04 * * 1-5 % command=start; tagName=infra_environment_class; tagValue=hercules; region=eu-west-1
+        ''')
+    }
+    environment {
+        VERSION = "Build-${currentBuild.number}"
+        //MATTERMOST_INFRA_AUTOMATE_ENDPOINT = "https://mattermost.ocset.net/hooks/u8kjhkentjdstx77cdrdq5ujcy"
+        MATTERMOST_INFRA_AUTOMATE_ENDPOINT = "https://mattermost.ocset.net/hooks/9wfoppznztb9pm5xu6gh1ek96w"
+        AUTOMATE_CHANNEL = "searchautomatebot"
+	CHANNEL_ID = "${params.channelId}"
+	CHANEEL_TOKEN = "${params.channelToken}"
+        BOT_COMMAND = "${params.command} ${params.tagName}=${params.tagValue} ${params.region}"
+        USER_NAME = "JENKINS-CI"
+        API_URL = "https://55e5c6e7fd.execute-api.eu-west-1.amazonaws.com/test/Ec2Automate"
+    }
+    agent any
+    stages {
+        stage('INFRA Status Check') {
+            steps {
+                echo "Building configuration: ${params.BuildConfiguration}"
+                echo "${params.command}"
+                script {
+                    try{
+                        def payload = JsonOutput.toJson([
+                            "user_name": "${USER_NAME}",
+                            "text": "${BOT_COMMAND}", 
+                            "command": "/searchautomatebot",
+                            "channel_id": "${CHANNEL_ID}",
+                            "token": "${CHANNEL_TOKEN}"
+                            ])
+                        echo payload
+                        def botResponse = sh(returnStdout: true, script: "curl -H \"Content-Type: application/json\" -X POST -d '${payload}' ${API_URL}").trim()
+
+                        echo "${botResponse}"
+                        
+                        def jsonSlurper = new JsonSlurper()
+                        def botData = jsonSlurper.parseText("${botResponse}")
+                    
+                        echo "${botData.text}"
+                        
+                        mattermostSend(
+                            message: "${botData.text}",
+                            color: "good",
+                            channel: "${AUTOMATE_CHANNEL}",
+                            endpoint: "${MATTERMOST_INFRA_AUTOMATE_ENDPOINT}"
+                        )
+                    } catch(err) {
+                        echo currentBuild.result
+                    }
+                }
+                
+            }
+        }
+    }
+    post {
+        success {
+            mattermostSend(
+                message: "Infra Status Check from Jenkins - Done - OK",
+                color: "good",
+                channel: "${AUTOMATE_CHANNEL}",
+                endpoint: "${MATTERMOST_INFRA_AUTOMATE_ENDPOINT}"
+            )
+        }
+        failure {
+            mattermostSend(
+                message: "Infra Status Check from Jenkins - Done - Not OK",
+                color: "danger",
+                channel: "${AUTOMATE_CHANNEL}",
+                endpoint: "${MATTERMOST_INFRA_AUTOMATE_ENDPOINT}"
+            )
+        }
+        always {
+            echo 'Cleaning up the workspace.'
+            deleteDir()
+        }
+    }
+}
+

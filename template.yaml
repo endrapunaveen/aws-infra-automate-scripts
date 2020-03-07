@@ -1,0 +1,192 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: 'AWS::Serverless-2016-10-31'
+
+Parameters:
+  AutoPublishAliasName:
+    Type: String
+    Default: current
+    Description: The alias used for Auto Publishing
+  StageName:
+    Type: String
+    Default: prod
+    Description: The Lambda Function and API Gateway Stage
+  FunctionName:
+    Type: String
+    Default: Ec2Automate
+    Description: The Lambda Function Name
+
+Outputs:
+
+  Ec2AutomateAPIUrl:
+    Value:
+      Fn::Sub:
+        - "https://${Ec2AutomateAPI}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/"
+
+Resources:
+
+  Ec2AutomateFunction:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      AutoPublishAlias: !Ref AutoPublishAliasName
+      FunctionName:
+        Fn::Sub:
+          - ${FunctionName}-${StageName}
+      Handler: index-refactor-try.handler
+      Runtime: nodejs6.10
+      CodeUri: ./api-lambda-ec2-mattermost-automation.zip
+      Environment:
+        Variables:
+          STAGE: !Ref StageName
+          REGION: !Ref "AWS::Region"
+      Role: !GetAtt Ec2AutomateFunctionIAMRole.Arn
+      Events:
+        AnyRequest:
+          Type: Api
+          Properties:
+            Path: /
+            Method: ANY
+            RestApiId:
+              Ref: Ec2AutomateAPI
+
+  Ec2AutomateAPILambdaPermission:
+    DependsOn : Ec2AutomateFunction
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: lambda:InvokeFunction
+      SourceArn:
+        Fn::Sub:
+          - "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${Ec2AutomateAPI}/*"
+      FunctionName:
+        Fn::Sub:
+          - ${FuncArn}:current
+          - { FuncArn: !GetAtt Ec2AutomateFunction.Arn }
+      Principal: apigateway.amazonaws.com
+
+  Ec2AutomateFunctionIAMRole:
+   Type: "AWS::IAM::Role"
+   Properties:
+     Path: "/"
+     ManagedPolicyArns:
+         - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+     AssumeRolePolicyDocument:
+       Version: "2012-10-17"
+       Statement:
+         -
+           Effect: "Allow"
+           Action:
+             - "sts:AssumeRole"
+           Principal:
+             Service:
+               - "lambda.amazonaws.com"
+     Policies: # Inline Policies
+       -
+         PolicyName: "CW-Logs"
+         PolicyDocument:
+           Version: "2012-10-17"
+           Statement:
+             -
+               Effect: "Allow"
+               Action:
+                 - "logs:*"
+               Resource: "*"
+       -
+         PolicyName: "EC2-Automate"
+         PolicyDocument:
+           Version: "2012-10-17"
+           Statement:
+             -
+               Effect: "Allow"
+               Action:
+                 - "ec2:DescribeInstances"
+                 - "ec2:TerminateInstances"
+                 - "ec2:StopInstances"
+                 - "ec2:StartInstances"
+               Resource: "*"
+       -
+         PolicyName: "AG-Automate"
+         PolicyDocument:
+           Version: "2012-10-17"
+           Statement:
+             -
+               Effect: "Allow"
+               Action:
+                 - "autoscaling:ResumeProcesses"
+                 - "autoscaling:SuspendProcesses"
+                 - "autoscaling:DescribeAutoScalingGroups"
+                 - "autoscaling:DetachInstances"
+               Resource: "*"
+
+  Ec2AutomateAPI:
+    Type: 'AWS::Serverless::Api'
+    Properties:
+      StageName: !Ref StageName
+      DefinitionBody:
+        swagger: 2.0
+        info:
+          title:
+            Fn::Sub:
+              - API-${FunctionName}-${StageName}
+        paths:
+          /:
+            x-amazon-apigateway-any-method:
+              produces:
+                - "application/json"
+              x-amazon-apigateway-integration:
+                uri:
+                  Fn::Sub:
+                    - "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${Ec2AutomateFunction.Arn}:${AutoPublishAliasName}/invocations"
+                passthroughBehavior: when_no_match
+                httpMethod: POST
+                type: aws_proxy
+                requestTemplates:
+                  "application/x-www-form-urlencoded":
+                    "## convert HTML POST data or HTTP GET query string to JSON
+                      ## get the raw post data from the AWS built-in variable and give it a nicer name
+                      #if ($context.httpMethod == \"POST\")
+                       #set($rawAPIData = $input.path('$'))
+                      #elseif ($context.httpMethod == \"GET\")
+                       #set($rawAPIData = $input.params().querystring)
+                       #set($rawAPIData = $rawAPIData.toString())
+                       #set($rawAPIDataLength = $rawAPIData.length() - 1)
+                       #set($rawAPIData = $rawAPIData.substring(1, $rawAPIDataLength))
+                       #set($rawAPIData = $rawAPIData.replace(\", \", \"&\"))
+                      #else
+                       #set($rawAPIData = \"\")
+                      #end
+
+                      ## first we get the number of \"&\" in the string, this tells us if there is more than one key value pair
+                      #set($countAmpersands = $rawAPIData.length() - $rawAPIData.replace(\"&\", \"\").length())
+
+                      ## if there are no \"&\" at all then we have only one key value pair.
+                      ## we append an ampersand to the string so that we can tokenise it the same way as multiple kv pairs.
+                      ## the \"empty\" kv pair to the right of the ampersand will be ignored anyway.
+                      #if ($countAmpersands == 0)
+                       #set($rawPostData = $rawAPIData + \"&\")
+                      #end
+
+                      ## now we tokenise using the ampersand(s)
+                      #set($tokenisedAmpersand = $rawAPIData.split(\"&\"))
+
+                      ## we set up a variable to hold the valid key value pairs
+                      #set($tokenisedEquals = [])
+
+                      ## now we set up a loop to find the valid key value pairs, which must contain only one \"=\"
+                      #foreach( $kvPair in $tokenisedAmpersand )
+                       #set($countEquals = $kvPair.length() - $kvPair.replace(\"=\", \"\").length())
+                       #if ($countEquals == 1)
+                        #set($kvTokenised = $kvPair.split(\"=\"))
+                        #if ($kvTokenised[0].length() > 0)
+                         ## we found a valid key value pair. add it to the list.
+                         #set($devNull = $tokenisedEquals.add($kvPair))
+                        #end
+                       #end
+                      #end
+
+                      ## next we set up our loop inside the output structure \"{\" and \"}\"
+                      {
+                      #foreach( $kvPair in $tokenisedEquals )
+                        ## finally we output the JSON for this pair and append a comma if this isn't the last pair
+                        #set($kvTokenised = $kvPair.split(\"=\"))
+                       \"$util.urlDecode($kvTokenised[0])\" : #if($kvTokenised[1].length() > 0)\"$util.urlDecode($kvTokenised[1])\"#{else}\"\"#end#if( $foreach.hasNext ),#end
+                      #end
+                      }"
